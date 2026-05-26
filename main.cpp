@@ -1,51 +1,62 @@
-#include <stdio.h>
-#include <string.h>
-#include "pico/stdlib.h"
-#include "hardware/i2c.h"
-#include "hardware/adc.h"
-#include "utils/oled/ssd1306.hpp"
-#include "utils/temp_press_sensor/bmp280.hpp"
+#include "pico.hpp"
+#include "debugging/debugging.hpp"
 
-// Definim pinii pentru I2C (folosiți automat de i2c_default în Pico SDK)
-#define I2C_SDA_PIN 4
-#define I2C_SCL_PIN 5
 
-// Definim pinul pentru microfon (GP26 corespunde canalului ADC 0)
-#define MIC_PIN 26
+// struct for calibrating temperature and preassure sensor
+struct bmp280_calib_param calib_params;
+
+// initialise components
+void initialise_components() {
+    // LEDs pins initialisation
+    gpio_init(LED_RED);
+    gpio_init(LED_YELLOW);
+    gpio_init(LED_GREEN);
+
+    // pin current transfer
+    gpio_set_dir(LED_RED, GPIO_OUT);
+    gpio_set_dir(LED_YELLOW, GPIO_OUT);
+    gpio_set_dir(LED_GREEN, GPIO_OUT);
+
+    // buzzer pin initialization
+    gpio_init(BUZZER_POS);
+    gpio_set_dir(BUZZER_POS, GPIO_OUT);
+
+    // microphone pin initialization
+    // open hardware
+    adc_init();
+    // set pin for microphone
+    adc_gpio_init(MAX4466_OUT);
+    // activate read
+    adc_select_input(0);
+
+    // initialise oled
+    // standard 400 khz speed
+    i2c_init(i2c_default, SSD1306_I2C_CLK * 1000);
+
+    // pin management because of overlapping with sensor
+    gpio_set_function(SSD_1306_SDA, GPIO_FUNC_I2C);
+    gpio_set_function(SSD_1306_SCL, GPIO_FUNC_I2C);
+
+    gpio_pull_up(SSD_1306_SDA);
+    gpio_pull_up(SSD_1306_SCL);
+
+    // temperature and pressure sensor initialisation using utils libraries api
+    bmp280_init();
+    bmp280_get_calib_params(&calib_params);
+
+    SSD1306_init();
+}
+
+
 
 int main() {
-    // 1. Inițializare Serială (pentru monitorizare în consolă)
+    // for serial monitor
     stdio_init_all();
-    sleep_ms(2000); // Un mic delay esențial pentru a apuca să deschizi Serial Monitor
-    printf("--- Pornire Sistem Telemetrie Pico ---\n");
 
-    // 2. Inițializare Magistrală I2C
-    // Pachetul Pico SDK folosește i2c_default, configurat aici la 400kHz
-    i2c_init(i2c_default, 400 * 1000);
-    gpio_set_function(I2C_SDA_PIN, GPIO_FUNC_I2C);
-    gpio_set_function(I2C_SCL_PIN, GPIO_FUNC_I2C);
-    gpio_pull_up(I2C_SDA_PIN);
-    gpio_pull_up(I2C_SCL_PIN);
+    // intialise pins for input and output data 
+    initialise_components();
 
-    // 3. Inițializare Senzor BMP280
-    bmp280_init();
-    struct bmp280_calib_param calib_params;
-    bmp280_get_calib_params(&calib_params);
-    printf("[OK] Senzor BMP280 pregătit.\n");
-
-    // 4. Inițializare Ecran OLED SSD1306
-    SSD1306_init();
-    printf("[OK] Ecran OLED inițializat.\n");
-
-    // 5. Inițializare Port Analogic (ADC) pentru Microfon
-    adc_init();
-    adc_gpio_init(MIC_PIN);
-    adc_select_input(0); // Selectăm canalul 0 (asociat pinului GP26)
-    printf("[OK] Convertor Microfon activat.\n");
-
-    // 6. Pregătirea structurii de randare pentru ecranul OLED
-    uint8_t oled_buffer[SSD1306_BUF_LEN];
-    
+    // define oled frame
     struct render_area frame_area;
     frame_area.start_col = 0;
     frame_area.end_col = SSD1306_WIDTH - 1;
@@ -53,50 +64,92 @@ int main() {
     frame_area.end_page = SSD1306_NUM_PAGES - 1;
     calc_render_area_buflen(&frame_area);
 
-    char text_line[20]; // Buffer temporar pentru formatarea textului
+    // create buffer
+    uint8_t send_buffer[SSD1306_BUF_LEN];
 
-    // Bucla infinită de rulare
-    while (true) {
-        // --- A. CITIRE ȘI CALCUL DATE SENZOR (BMP280) ---
-        int32_t raw_temp, raw_pressure;
-        bmp280_read_raw(&raw_temp, &raw_pressure);
+    // line buffer pentru scrierea fiecarui rand
+    char line_buffer[32];
 
-        // Funcțiile convertesc datele brute folosind parametrii din fabrică
-        int32_t temp_centigrade = bmp280_convert_temp(raw_temp, &calib_params);
-        int32_t pressure_pa = bmp280_convert_pressure(raw_pressure, raw_temp, &calib_params);
+    while (1) {
+        // read current sound value using api function 
+        uint16_t current_microphone_value = adc_read();
 
-        // Transformăm valorile întregi în numere cu virgulă (hPa și Celsius)
-        float final_temp = temp_centigrade / 100.0f;
-        float final_pressure = pressure_pa / 100.0f;
+        // read current parameters for temperature and pressure
+        int32_t raw_temperature;
+        int32_t raw_pressure;
 
-        // --- B. CITIRE VALOARE MICROFON ---
-        uint16_t mic_raw_value = adc_read(); // Returnează o valoare între 0 și 4095
+        // extract numbers 
+        bmp280_read_raw(&raw_temperature, &raw_pressure);
 
-        // --- C. AFIȘARE ÎN CONSOLĂ (Prin cablul USB) ---
-        printf("Temp: %.2f C | Presiune: %.2f hPa | Mic: %d\n", final_temp, final_pressure, mic_raw_value);
+        // convert raw data with constrains in calib_params
+        int32_t converted_temperature = bmp280_convert_temp(raw_temperature, &calib_params);
+        int32_t converted_pressure = bmp280_convert_pressure(raw_pressure, raw_temperature, &calib_params);
 
-        // --- D. DESENARE ȘI UPDATE ECRA OLED ---
-        // Curățăm buffer-ul (ștergem imaginea anterioară umplând totul cu pixeli stinși / 0)
-        memset(oled_buffer, 0, SSD1306_BUF_LEN);
+        // conversions
+        float temp_celsius = converted_temperature / 100.0f;
+        float pressure_hpa = converted_pressure / 100.0f;
 
-        // Linia 1: Temperatura (y = 0)
-        snprintf(text_line, sizeof(text_line), "TEMP: %.2f C", final_temp);
-        WriteString(oled_buffer, 0, 0, text_line);
+        // for tempreture the intervals are:
+        // < 25 -> green led all fine
+        // [25, 27] -> yellow led warning
+        // > 27 -> red led + buzzer overheating
+        // for sound the intervals are:
+        // < 2000 -> green led all fine
+        // [2000, 3000] -> yellow led warning
+        // > 3000 -> red led + buzzer overheating
+        if (temp_celsius > 30.0f || current_microphone_value > 3000) {
+            printf("critical!!!\n");
+            gpio_put(LED_RED, true);
+            gpio_put(LED_YELLOW, false);
+            gpio_put(LED_GREEN, false);
+            gpio_put(BUZZER_POS, true);
+        } else if (temp_celsius >= 29.0f || current_microphone_value >= 2500) {
+            printf("worried\n");
+            gpio_put(LED_RED, false);
+            gpio_put(LED_YELLOW, true);
+            gpio_put(LED_GREEN, false);
+            gpio_put(BUZZER_POS, false);
+        } else {
+            printf("ok\n");
+            gpio_put(LED_RED, false);
+            gpio_put(LED_YELLOW, false);
+            gpio_put(LED_GREEN, true);
+            gpio_put(BUZZER_POS, false);
+        }
 
-        // Linia 2: Presiunea atmosferică (y = 12)
-        snprintf(text_line, sizeof(text_line), "PRES: %.1f HPA", final_pressure);
-        WriteString(oled_buffer, 0, 12, text_line);
+        printf("temperature: %.2f, pressure: %.2f\nsound volume: %d\n", temp_celsius, pressure_hpa, current_microphone_value);
+        
+        // clean buffer
+        memset(send_buffer, 0, SSD1306_BUF_LEN);
+        
+        // write temperature line 
+        snprintf(line_buffer, sizeof(line_buffer), "temp: %.2f C", temp_celsius);
+        WriteString(send_buffer, 0, 0, line_buffer);
 
-        // Linia 3: Microfonul (y = 24)
-        snprintf(text_line, sizeof(text_line), "SUNET: %d", mic_raw_value);
-        WriteString(oled_buffer, 0, 24, text_line);
+        // write pressure line 
+        snprintf(line_buffer, sizeof(line_buffer), "press: %.2f hpa", pressure_hpa);
+        WriteString(send_buffer, 0, 8, line_buffer);
 
-        // Trimitem noul buffer către ecranul fizic
-        render(oled_buffer, &frame_area);
+        // write sound line 
+        snprintf(line_buffer, sizeof(line_buffer), "vol: %d", current_microphone_value);
+        WriteString(send_buffer, 0, 16, line_buffer);
 
-        // Citim datele de două ori pe secundă
-        sleep_ms(500);
+        // write state on oled
+        if (temp_celsius > 30.0f || current_microphone_value > 3000) {
+            WriteString(send_buffer, 0, 24, (char*)"STATE: CRITICAL!");
+        } else if (temp_celsius >= 29.0f || current_microphone_value >= 2500) {
+            WriteString(send_buffer, 0, 24, (char*)"STATE: WARNING");
+        } else {
+            WriteString(send_buffer, 0, 24, (char*)"STATE: NORMAL");
+        }
+
+        // send to oled
+        render(send_buffer, &frame_area);
+
+        sleep_ms(100);
     }
+
+
 
     return 0;
 }
