@@ -6,7 +6,7 @@ project(pico_project C CXX ASM)
 pico_sdk_init()
 
 add_executable(pico_project
-    main.cpp
+    src/main.cpp
     utils/oled/ssd1306.cpp
     utils/temp_press_sensor/bmp280.cpp
     debugging/debugging.cpp
