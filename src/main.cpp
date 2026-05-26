@@ -1,5 +1,5 @@
 #include "pico.hpp"
-#include "debugging/debugging.hpp"
+#include "../debugging/debugging.hpp"
 
 
 // struct for calibrating temperature and preassure sensor

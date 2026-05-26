@@ -9,8 +9,8 @@
 #include "pico/stdlib.h"
 #include "hardware/i2c.h"
 #include "hardware/adc.h"
-#include "utils/oled/ssd1306.hpp"
-#include "utils/temp_press_sensor/bmp280.hpp"
+#include "../utils/oled/ssd1306.hpp"
+#include "../utils/temp_press_sensor/bmp280.hpp"
 
 // pins definition 
 // pins for oled (ssd1306)
