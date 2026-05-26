@@ -3,7 +3,7 @@
 
 #pragma once 
 
-#include "../pico.hpp"
+#include "../src/pico.hpp"
 
 
 void test_leds();
